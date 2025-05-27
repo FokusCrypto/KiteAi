@@ -770,7 +770,7 @@ class KiteAi:
                 )
                 return False
 
-    async def process_accounts(self, address: str, agents: list, interact_count: int, use_proxy: bool, rotate_proxy: bool, claim_faucet: bool):
+    async def process_accounts(self, address: str, interact_count: int, use_proxy: bool, rotate_proxy: bool, claim_faucet: bool):
         signed = await self.process_user_signin(address, use_proxy, rotate_proxy)
         if signed:
             proxy = self.get_next_proxy_for_account(address) if use_proxy else None
