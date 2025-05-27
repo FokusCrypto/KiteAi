@@ -1,3 +1,4 @@
+import sys
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 from aiohttp import ClientResponseError, ClientSession, ClientTimeout
@@ -34,6 +35,7 @@ class KiteAi:
         self.access_tokens = {}
         self.header_cookies = {}
         self.user_interactions = {}
+        self.user_token = None
 
     def clear_terminal(self):
         os.system('cls' if os.name == 'nt' else 'clear')
@@ -364,8 +366,25 @@ class KiteAi:
                 else:
                     print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter 'y' or 'n'.{Style.RESET_ALL}")
 
-        return count, choose, rotate
-        
+        while True:
+            claim_faucet = input(f"{Fore.BLUE + Style.BRIGHT}Claim Faucet? [y/n] -> {Style.RESET_ALL}").strip()
+            if claim_faucet in ["y", "n"]:
+                claim_faucet = claim_faucet == "y"
+                break
+            else:
+                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter 'y' or 'n'.{Style.RESET_ALL}")
+
+        if claim_faucet:
+            with open('2captcha.txt', 'r') as f:
+                captcha_key = f.read().strip()
+            if not captcha_key:
+                self.log(f"{Fore.RED + Style.BRIGHT}2captcha.txt is empty. Stopping.{Style.RESET_ALL}")
+                sys.exit()
+
+            self.user_token = captcha_key
+
+        return count, choose, rotate, claim_faucet
+
     async def user_signin(self, address: str, proxy=None, retries=5):
         url = f"{self.NEO_API}/signin"
         data = json.dumps({"eoa":address})
@@ -667,7 +686,196 @@ class KiteAi:
         )
         return True
         
-    async def process_accounts(self, address: str, interact_count: int, use_proxy: bool, rotate_proxy: bool):
+    async def get_captcha_token(self, proxy=None, retries=5):
+        for attempt in range(retries):
+            connector = ProxyConnector.from_url(proxy) if proxy else None
+            try:
+                url = "https://api.2captcha.com/createTask"
+                payload = {
+                    "clientKey": self.user_token,
+                    "task": {
+                        "type": "RecaptchaV2TaskProxyless",
+                        "websiteURL": "https://testnet.gokite.ai",
+                        "websiteKey": "6Lc_VwgrAAAAALtx_UtYQnW-cFg8EPDgJ8QVqkaz",
+                        "isInvisible": False
+                    }
+                }
+                
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}Faucet    :{Style.RESET_ALL}"
+                    f"{Fore.YELLOW+Style.BRIGHT} Requesting CAPTCHA... {Style.RESET_ALL}"
+                )
+                
+                async with ClientSession(connector=connector, timeout=ClientTimeout(total=60)) as session:
+                    async with session.post(
+                        url=url,
+                        json=payload,
+                        headers={"Content-Type": "application/json"}
+                    ) as response:
+                        response_text = await response.text()
+                        try:
+                            task_response = json.loads(response_text)
+                        except json.JSONDecodeError:
+                            if attempt < retries - 1:
+                                await asyncio.sleep(5)
+                                continue
+                            return None
+                        
+                        if not task_response.get("taskId"):
+                            error_msg = task_response.get("errorDescription", "Unknown error")
+                            error_code = task_response.get("errorCode", "No error code")
+                            self.log(
+                                f"{Fore.CYAN+Style.BRIGHT}Faucet    :{Style.RESET_ALL}"
+                                f"{Fore.RED+Style.BRIGHT} CAPTCHA Request Failed: {error_msg} (Code: {error_code}) {Style.RESET_ALL}"
+                            )
+                            if attempt < retries - 1:
+                                await asyncio.sleep(5)
+                                continue
+                            return None
+                        
+                        task_id = task_response.get("taskId")
+                        
+                        max_attempts = 30
+                        for i in range(max_attempts):
+                            await asyncio.sleep(10)
+                            
+                            url = "https://api.2captcha.com/getTaskResult"
+                            payload = {
+                                "clientKey": self.user_token,
+                                "taskId": task_id
+                            }
+                            
+                            async with session.post(
+                                url=url,
+                                json=payload,
+                                headers={"Content-Type": "application/json"}
+                            ) as response:
+                                response_text = await response.text()
+                                try:
+                                    result = json.loads(response_text)
+                                except json.JSONDecodeError:
+                                    continue
+                                
+                                if result.get("status") == "processing":
+                                    if (i + 1) % 3 == 0:
+                                        self.log(
+                                            f"{Fore.CYAN+Style.BRIGHT}Faucet    :{Style.RESET_ALL}"
+                                            f"{Fore.YELLOW+Style.BRIGHT} CAPTCHA still processing... {Style.RESET_ALL}"
+                                        )
+                                    continue
+                                
+                                if result.get("status") == "ready":
+                                    token = result.get("solution", {}).get("gRecaptchaResponse")
+                                    if token:
+                                        self.log(
+                                            f"{Fore.CYAN+Style.BRIGHT}Faucet    :{Style.RESET_ALL}"
+                                            f"{Fore.GREEN+Style.BRIGHT} CAPTCHA Token Success {Style.RESET_ALL}"
+                                        )
+                                        return token
+                                
+                                error_msg = result.get("errorDescription", "Unknown error")
+                                error_code = result.get("errorCode", "No error code")
+                                self.log(
+                                    f"{Fore.CYAN+Style.BRIGHT}Faucet    :{Style.RESET_ALL}"
+                                    f"{Fore.RED+Style.BRIGHT} CAPTCHA Error: {error_msg} (Code: {error_code}) {Style.RESET_ALL}"
+                                )
+                                break
+                        
+                        self.log(
+                            f"{Fore.CYAN+Style.BRIGHT}Faucet    :{Style.RESET_ALL}"
+                            f"{Fore.RED+Style.BRIGHT} CAPTCHA Timeout {Style.RESET_ALL}"
+                        )
+                        
+            except Exception as e:
+                if attempt < retries - 1:
+                    await asyncio.sleep(5)
+                    continue
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}Faucet    :{Style.RESET_ALL}"
+                    f"{Fore.RED+Style.BRIGHT} CAPTCHA Failed: {str(e)} {Style.RESET_ALL}"
+                )
+                return None
+
+    async def claim_faucet(self, address: str, proxy=None, retries=5):
+        url = f"{self.OZONE_API}/blockchain/faucet-transfer"
+        for attempt in range(retries):
+            connector = ProxyConnector.from_url(proxy) if proxy else None
+            try:
+                if attempt > 0:
+                    await asyncio.sleep(10)
+                
+                captcha_token = await self.get_captcha_token(proxy)
+                if not captcha_token:
+                    self.log(
+                        f"{Fore.CYAN+Style.BRIGHT}Faucet    :{Style.RESET_ALL}"
+                        f"{Fore.RED+Style.BRIGHT} Failed to get CAPTCHA token {Style.RESET_ALL}"
+                    )
+                    continue
+
+                headers = {
+                    **self.headers,
+                    'authorization': f"Bearer {self.access_tokens[address]}",
+                    'x-recaptcha-token': captcha_token,
+                }
+                
+                payload = {}
+                
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}Faucet    :{Style.RESET_ALL}"
+                    f"{Fore.YELLOW+Style.BRIGHT} Claiming faucet... {Style.RESET_ALL}"
+                )
+                
+                async with ClientSession(connector=connector, timeout=ClientTimeout(total=60)) as session:
+                    async with session.post(
+                        url=url,
+                        headers=headers,
+                        json=payload
+                    ) as response:
+                        response_text = await response.text()
+                        try:
+                            result = json.loads(response_text)
+                        except json.JSONDecodeError:
+                            if attempt < retries - 1:
+                                continue
+                            return False
+                        
+                        if response.status == 200:
+                            self.log(
+                                f"{Fore.CYAN+Style.BRIGHT}Faucet    :{Style.RESET_ALL}"
+                                f"{Fore.GREEN+Style.BRIGHT} Claim Success {Style.RESET_ALL}"
+                            )
+                            return True
+                        elif response.status == 429:
+                            self.log(
+                                f"{Fore.CYAN+Style.BRIGHT}Faucet    :{Style.RESET_ALL}"
+                                f"{Fore.RED+Style.BRIGHT} Rate limited, waiting... {Style.RESET_ALL}"
+                            )
+                            await asyncio.sleep(15)
+                            continue
+                        else:
+                            error_msg = result.get("error", "Unknown error")
+                            self.log(
+                                f"{Fore.CYAN+Style.BRIGHT}Faucet    :{Style.RESET_ALL}"
+                                f"{Fore.YELLOW+Style.BRIGHT} {error_msg} {Style.RESET_ALL}"
+                            )
+                            if "Already claimed today" in error_msg:
+                                return True
+                            if attempt < retries - 1:
+                                await asyncio.sleep(5)
+                                continue
+                            return False
+                            
+            except Exception as e:
+                if attempt < retries - 1:
+                    await asyncio.sleep(5)
+                    continue
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}Faucet    :{Style.RESET_ALL}"
+                    f"{Fore.RED+Style.BRIGHT} Claim Error: {str(e)} {Style.RESET_ALL}"
+                )
+                return False
+
+    async def process_accounts(self, address: str, interact_count: int, use_proxy: bool, rotate_proxy: bool, claim_faucet: bool):
         signed = await self.process_user_signin(address, use_proxy, rotate_proxy)
         if signed:
             proxy = self.get_next_proxy_for_account(address) if use_proxy else None
@@ -675,6 +883,14 @@ class KiteAi:
                 f"{Fore.CYAN+Style.BRIGHT}Proxy     :{Style.RESET_ALL}"
                 f"{Fore.WHITE+Style.BRIGHT} {proxy} {Style.RESET_ALL}"
             )
+        
+            if claim_faucet:
+                await self.claim_faucet(address, proxy)
+            else:
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}Faucet    :{Style.RESET_ALL}"
+                    f"{Fore.YELLOW+Style.BRIGHT} Skipped {Style.RESET_ALL}"
+                )
         
             user = await self.user_data(address, proxy)
             if not user:
@@ -895,7 +1111,7 @@ class KiteAi:
             with open('accounts.txt', 'r') as file:
                 accounts = [line.strip() for line in file if line.strip()]
             
-            count, use_proxy_choice, rotate_proxy = self.print_question()
+            count, use_proxy_choice, rotate_proxy, claim_faucet = self.print_question()
 
             while True:
                 use_proxy = False
@@ -927,7 +1143,7 @@ class KiteAi:
                         
                         self.auth_tokens[address] = auth_token
                         
-                        await self.process_accounts(address, count, use_proxy, rotate_proxy)
+                        await self.process_accounts(address, count, use_proxy, rotate_proxy, claim_faucet)
                         await asyncio.sleep(3)
 
                 self.log(f"{Fore.CYAN + Style.BRIGHT}={Style.RESET_ALL}"*72)
