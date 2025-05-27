@@ -13,6 +13,7 @@ Kite AI Ozone BOT
   - Auto Run With Private Proxy - `Choose 2`
   - Auto Run Without Proxy - `Choose 3`
   - Auto Rotate Invalid Proxies - `y` or `n`
+  - Auto Claim Faucet with 2captcha Integration
   - Auto Complete Daily Quiz
   - Auto Stake & Unstake KITE Token
   - Auto Interaction With Kite AI Agents
@@ -64,6 +65,11 @@ Kite AI Ozone BOT
     ip:port # Default Protcol HTTP.
     protocol://ip:port
     protocol://user:pass@ip:port
+  ```
+
+- **2captcha.txt:** You will find the file `2captcha.txt` inside the project directory. This file should contain your 2captcha API key for the faucet claiming feature:
+  ```bash
+    your_2captcha_api_key
   ```
 
 ## Run
